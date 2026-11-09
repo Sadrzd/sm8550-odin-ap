@@ -143,12 +143,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Make scripts executable
-        run: |
-          # 经 API/网页推送的文件会丢掉可执行位（git mode 100644），
-          # 这里统一补上，否则 ./scripts/*.sh 会报 Permission denied（exit 126）。
-          chmod +x scripts/*.sh
-          ls -l scripts/
-
+        run: chmod +x scripts/*.sh
       - name: Resolve effective vbmeta mode
         run: |
           # 韩版（vbmeta_policy=none）的 AP 不考虑 vbmeta：强制 omit，
