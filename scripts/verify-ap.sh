@@ -84,20 +84,30 @@ done
 ok "全部 lz4 成员为三星格式（magic 04224d186c）"
 
 # --- 4. boot.img：ANDROID! 头 + 内核 ARM64 Image magic ---
-# 注意：boot.img 开头是 header（page_size 字节，通常 4096），内核从
-# header 之后才开始，ARMd magic 在“内核内偏移 0x38”处，即 boot.img
-# 内的 page_size+0x38 处——直接对 boot.img 查 0x38 查的是 header 里
-# 的字段，必然失败（2026-11-09 第 13 次构建就栽在这里）。
-# 所以先从 header 里读 page_size（偏移 36 处的 u32），再定位内核。
+# 注意：boot.img 开头是 header，内核从 header 之后才开始，ARMd magic
+# 在“内核内偏移 0x38”处。header 布局随版本不同（2026-11-09 第 14 次
+# 构建就栽在这里：v3/v4 头里偏移 36 处是保留字段，全是 0）：
+#   - v0/v1/v2：内核偏移 = page_size（偏移 36 处的 u32）；
+#   - v3/v4（三星 SM8550 用这个）：page_size 固定 4096，内核偏移 =
+#     header_size（偏移 20 处的 u32）向上对齐到 4096。
+#   （依据 Magisk bootimg.hpp：v3/v4 的 hdr_space() =
+#     align_to(hdr_size(), page_size())，page_size() 固定 4096。）
 if ! python3 - "$WORK/boot.img" <<'EOF'
 import struct, sys
 with open(sys.argv[1], "rb") as f:
     head = f.read(8)
     assert head == b"ANDROID!", "boot.img 没有 ANDROID! 头"
-    f.seek(36)
-    page_size = struct.unpack("<I", f.read(4))[0]
-    assert page_size in (2048, 4096, 8192, 16384), f"page_size 异常：{page_size}"
-    f.seek(page_size + 0x38)
+    f.seek(40)
+    header_version = struct.unpack("<I", f.read(4))[0]
+    if header_version >= 3:
+        f.seek(20)
+        header_size = struct.unpack("<I", f.read(4))[0]
+        kernel_off = (header_size + 4095) // 4096 * 4096
+    else:
+        f.seek(36)
+        kernel_off = struct.unpack("<I", f.read(4))[0]
+    assert kernel_off in (2048, 4096, 8192, 16384), f"内核偏移异常：{kernel_off}"
+    f.seek(kernel_off + 0x38)
     assert f.read(4) == b"ARMd", "内核不是 ARM64 Image（内核偏移 0x38 处无 ARMd magic）"
 EOF
 then
