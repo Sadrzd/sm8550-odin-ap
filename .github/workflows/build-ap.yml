@@ -1,0 +1,391 @@
+# build-ap.yml — 构建 Odin 直刷 AP 包
+#
+# 触发：
+#   repository_dispatch：内核仓库发布 Release 后发 kernel-released 事件（即时）
+#   schedule：每 6 小时巡检内核仓库 + tiann/KernelSU 的最新 Release（兜底）
+#   workflow_dispatch：手动触发，可指定内核 tag、KSU 版本、机型范围、vbmeta 模式
+#
+# 流程：prepare（查上游、定版本、定矩阵）→ build（每机型并行）→ publish（发 Release、回写 pins）
+# 安全：
+#   - AP 里只有 boot / init_boot / vbmeta*，绝无 CSC / BL / CP，不做 repartition
+#   - vbmeta 默认 omit（不含 vbmeta）；改 flags 必须显式 allow_vbmeta_disable
+#   - 同名 Release 已存在时跳过，不重复发布
+#   - 任何校验失败都直接 fail，不发布
+name: Build Odin AP
+
+on:
+  repository_dispatch:
+    types: [kernel-released]
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      kernel_tag:
+        description: '内核 Release tag（留空则用最新）'
+        required: false
+        default: ''
+      ksu_version:
+        description: 'KernelSU 版本 tag（留空则用 config/pins.json 里钉死的版本）'
+        required: false
+        default: ''
+      devices:
+        description: '机型范围：all（v1 全部）或单个型号，如 SM-S918N'
+        required: false
+        default: 'all'
+      vbmeta_mode:
+        description: 'vbmeta 模式（仅适用于国行 build；韩版固定 omit）：omit（默认，不含 vbmeta）/ reuse / disable / stock（仅测试）'
+        required: false
+        default: 'omit'
+      allow_vbmeta_disable:
+        description: '允许生成 flags=2 的 vbmeta（首次刷入可能清空数据）。仅 disable 模式需要。'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: build-ap
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  KERNEL_REPO: Sadrzd/kernel_samsung_sm8550
+  KSU_REPO: tiann/KernelSU
+  KMI: android13-5.15
+
+jobs:
+  prepare:
+    name: Check upstream
+    runs-on: ubuntu-24.04
+    outputs:
+      should_build: ${{ steps.decide.outputs.should_build }}
+      kernel_tag: ${{ steps.decide.outputs.kernel_tag }}
+      ksu_tag: ${{ steps.decide.outputs.ksu_tag }}
+      release_tag: ${{ steps.decide.outputs.release_tag }}
+      matrix: ${{ steps.decide.outputs.matrix }}
+      vbmeta_mode: ${{ steps.decide.outputs.vbmeta_mode }}
+      allow_vbmeta_disable: ${{ steps.decide.outputs.allow_vbmeta_disable }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve versions and matrix
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_KERNEL_TAG: ${{ github.event.client_payload.kernel_tag }}
+          INPUT_KERNEL_TAG: ${{ inputs.kernel_tag }}
+          INPUT_KSU_VERSION: ${{ inputs.ksu_version }}
+          INPUT_DEVICES: ${{ inputs.devices }}
+          INPUT_VBMETA_MODE: ${{ inputs.vbmeta_mode }}
+          INPUT_ALLOW_DISABLE: ${{ inputs.allow_vbmeta_disable }}
+        run: |
+          set -euo pipefail
+          PINNED_KSU="$(python3 -c "import json; print(json.load(open('config/pins.json'))['kernelsu']['tag'])")"
+          LAST_BUILT="$(python3 -c "import json; print(json.load(open('config/pins.json'))['kernel'].get('last_built_tag') or '')")"
+
+          # 内核 tag：dispatch payload > 手动输入 > 上游最新
+          if [ -n "$DISPATCH_KERNEL_TAG" ]; then KERNEL_TAG="$DISPATCH_KERNEL_TAG";
+          elif [ -n "$INPUT_KERNEL_TAG" ]; then KERNEL_TAG="$INPUT_KERNEL_TAG";
+          else KERNEL_TAG="$(gh api "repos/$KERNEL_REPO/releases/latest" --jq .tag_name)"; fi
+          # KSU tag：手动输入 > pins.json 钉死的版本
+          if [ -n "$INPUT_KSU_VERSION" ]; then KSU_TAG="$INPUT_KSU_VERSION";
+          else KSU_TAG="$PINNED_KSU"; fi
+          # 定时巡检时也看一眼上游 KSU 是否有新版（只记录，不自动跟进浮动版本）
+          UPSTREAM_KSU="$(gh api "repos/$KSU_REPO/releases/latest" --jq .tag_name)"
+          if [ "$UPSTREAM_KSU" != "$KSU_TAG" ]; then
+            echo "::notice::上游 KernelSU 已有新版 $UPSTREAM_KSU（当前钉死 $KSU_TAG）。请先在 config/pins.json 里更新并核实资产文件名后再跟进。"
+          fi
+
+          RELEASE_TAG="ap-${KERNEL_TAG}-ksu${KSU_TAG#v}"
+          echo "kernel_tag=$KERNEL_TAG" >> "$GITHUB_OUTPUT"
+          echo "ksu_tag=$KSU_TAG" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+          # 机型矩阵：matrix/devices.json 里 status=v1 的设备，按 priority 排序；
+          # 手动触发可指定单个型号
+          MATRIX="$(python3 scripts/select-matrix.py matrix/devices.json "$INPUT_DEVICES")"
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+          VBMETA_MODE="${INPUT_VBMETA_MODE:-omit}"
+          ALLOW_DISABLE="${INPUT_ALLOW_DISABLE:-false}"
+          echo "vbmeta_mode=$VBMETA_MODE" >> "$GITHUB_OUTPUT"
+          echo "allow_vbmeta_disable=$ALLOW_DISABLE" >> "$GITHUB_OUTPUT"
+
+          # 防重复：同名 Release 已存在就跳过（dispatch/巡检都可能重复触发）
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG 已存在，跳过本次构建。"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          elif [ "$EVENT_NAME" = "schedule" ] && [ "$KERNEL_TAG" = "$LAST_BUILT" ] && [ "$KSU_TAG" = "$PINNED_KSU" ]; then
+            echo "巡检：内核 $KERNEL_TAG 与 KSU $KSU_TAG 均无变化，跳过。"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build AP (${{ matrix.model }})
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    env:
+      KERNEL_TAG: ${{ needs.prepare.outputs.kernel_tag }}
+      KSU_TAG: ${{ needs.prepare.outputs.ksu_tag }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+      VBMETA_MODE: ${{ needs.prepare.outputs.vbmeta_mode }}
+      ALLOW_VBMETA_DISABLE: ${{ needs.prepare.outputs.allow_vbmeta_disable }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve effective vbmeta mode
+        run: |
+          # 韩版（vbmeta_policy=none）的 AP 不考虑 vbmeta：强制 omit，
+          # 后续步骤不再处理 vbmeta。国行（check）沿用 workflow 输入的模式。
+          if [ "${{ matrix.vbmeta_policy }}" = "none" ]; then
+            echo "VBMETA_MODE=omit" >> "$GITHUB_ENV"
+            echo "本机型（${{ matrix.model }}）vbmeta 策略为 none：AP 不含 vbmeta。"
+          fi
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq lz4 cpio unzip python3 curl jq xxd \
+            || sudo apt-get install -y -qq lz4 cpio unzip python3 curl jq vim-common
+          df -h
+          # Rust 工具链（装 samloader-rs 用）
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install samloader-rs
+        run: |
+          set -euo pipefail
+          if ! command -v samloader >/dev/null 2>&1; then
+            cargo install samloader
+          fi
+          samloader --help | head -n 20
+
+      - name: Fetch Faiz kernel from kernel repo release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p work/kernel
+          cd work/kernel
+          gh release download "$KERNEL_TAG" --repo "$KERNEL_REPO" \
+            --pattern 'SM8550_LKM_*.zip' --pattern 'SHA256SUMS' --pattern 'BUILDINFO.json'
+          sha256sum -c SHA256SUMS --ignore-missing
+          unzip -o SM8550_LKM_*.zip
+          test -f Image || { echo "zip 里没有 Image"; exit 1; }
+          # ARM64 Image magic：偏移 0x38 处为 "ARMd"
+          python3 -c "import sys; f=open(\"Image\",\"rb\"); f.seek(0x38); assert f.read(4)==b\"ARMd\", \"Image 不是 ARM64 内核\""
+          # 版本字符串须含 Faiz（BUILDINFO.json 为准，Image 内字符串为辅）
+          grep -q "Faiz" BUILDINFO.json || { echo "BUILDINFO.json 里没有 Faiz，版本不对"; exit 1; }
+          python3 -c "import json; print('kernel_release:', json.load(open('BUILDINFO.json'))['kernel_release'])"
+          echo "KERNEL_ZIP=$(ls SM8550_LKM_*.zip)" >> "$GITHUB_ENV"
+
+      - name: Fetch official KernelSU ksud + kernelsu.ko
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p work/ksu
+          # 列出该 Release 的全部资产，按模式挑选（资产名随版本可能变化，找不到就明确报错）
+          gh api "repos/$KSU_REPO/releases/tags/$KSU_TAG" --jq '.assets[].name' | tee work/ksu/assets.txt
+          KSUD_ASSET="$(grep -E '^ksud-x86_64-unknown-linux-musl$' work/ksu/assets.txt | head -n 1)"
+          KO_ASSET="$(grep -E "android13-5\.15.*\.ko$" work/ksu/assets.txt | head -n 1)"
+          [ -n "$KSUD_ASSET" ] || { echo "KSU Release $KSU_TAG 里没有 ksud Linux 二进制"; cat work/ksu/assets.txt; exit 1; }
+          [ -n "$KO_ASSET" ] || { echo "KSU Release $KSU_TAG 里没有 android13-5.15 的 kernelsu.ko"; cat work/ksu/assets.txt; exit 1; }
+          cd work/ksu
+          gh release download "$KSU_TAG" --repo "$KSU_REPO" --pattern "$KSUD_ASSET" --pattern "$KO_ASSET"
+          mv "$KSUD_ASSET" ksud && chmod +x ksud
+          echo "KSUD=work/ksu/ksud" >> "$GITHUB_ENV"
+          echo "KO_ASSET=$KO_ASSET" >> "$GITHUB_ENV"
+          ls -la
+
+      - name: Fetch stock firmware (SamLoader-RS)
+        run: |
+          set -euo pipefail
+          BASE_ARG=""
+          if [ -d "base-images/${{ matrix.model }}" ]; then
+            echo "发现备用底包目录 base-images/${{ matrix.model }}，下载失败时脚本会自动改用它。"
+            BASE_ARG="--base-dir base-images/${{ matrix.model }}"
+          fi
+          FETCH_ARGS="--model ${{ matrix.model }} --region ${{ matrix.region }} --out work/${{ matrix.model }} $BASE_ARG"
+          if [ "${{ matrix.vbmeta_policy }}" = "none" ]; then
+            FETCH_ARGS="$FETCH_ARGS --skip-vbmeta"
+          fi
+          # shellcheck disable=SC2086
+          ./scripts/fetch-stock.sh $FETCH_ARGS
+          cat "work/${{ matrix.model }}/stock-info.json"
+
+      - name: Build patched boot.img (Faiz kernel)
+        run: |
+          set -euo pipefail
+          ./scripts/build-boot.sh \
+            --stock-boot "work/${{ matrix.model }}/boot.img" \
+            --kernel work/kernel/Image \
+            --out "work/${{ matrix.model }}/boot-patched.img"
+
+      - name: Patch init_boot.img (ksud boot-patch)
+        run: |
+          set -euo pipefail
+          KO_FILE="$(find work/ksu -name '*.ko' | head -n 1)"
+          ./scripts/patch-init-boot.sh \
+            --init-boot "work/${{ matrix.model }}/init_boot.img" \
+            --kmi "$KMI" --ksud work/ksu/ksud --module "$KO_FILE" \
+            --out "work/${{ matrix.model }}/init_boot-patched.img"
+
+      - name: Handle vbmeta
+        if: matrix.vbmeta_policy != 'none'
+        run: |
+          set -euo pipefail
+          mkdir -p "work/${{ matrix.model }}/vbmeta"
+          ARGS=(./scripts/patch-vbmeta.sh --mode "$VBMETA_MODE" --out "work/${{ matrix.model }}/vbmeta")
+          if [ "$VBMETA_MODE" = "disable" ] || [ "$VBMETA_MODE" = "stock" ]; then
+            ARGS+=(--stock-vbmeta "work/${{ matrix.model }}/vbmeta.img")
+            [ -f "work/${{ matrix.model }}/vbmeta_system.img" ] && ARGS+=(--stock-vbmeta-system "work/${{ matrix.model }}/vbmeta_system.img")
+            [ -f "work/${{ matrix.model }}/vbmeta_vendor.img" ] && ARGS+=(--stock-vbmeta-vendor "work/${{ matrix.model }}/vbmeta_vendor.img")
+          fi
+          if [ "$VBMETA_MODE" = "omit" ]; then
+            ARGS+=(--stock-vbmeta "work/${{ matrix.model }}/vbmeta.img")
+          fi
+          if [ "$ALLOW_VBMETA_DISABLE" = "true" ]; then ARGS+=(--allow-disable); fi
+          "${ARGS[@]}"
+          echo "--- vbmeta flags 记录（将写入 Release notes）---"
+          cat "work/${{ matrix.model }}/vbmeta/vbmeta-flags.json" 2>/dev/null || echo "（omit 模式且无原厂 vbmeta 可记录）"
+
+      - name: Pack AP tar.md5
+        run: |
+          set -euo pipefail
+          mkdir -p "work/${{ matrix.model }}/ap"
+          cp "work/${{ matrix.model }}/boot-patched.img" "work/${{ matrix.model }}/ap/boot.img"
+          cp "work/${{ matrix.model }}/init_boot-patched.img" "work/${{ matrix.model }}/ap/init_boot.img"
+          # vbmeta 只在非 omit 模式下才进包
+          if [ "$VBMETA_MODE" != "omit" ]; then
+            for v in vbmeta.img vbmeta_system.img vbmeta_vendor.img; do
+              [ -f "work/${{ matrix.model }}/vbmeta/$v" ] && cp "work/${{ matrix.model }}/vbmeta/$v" "work/${{ matrix.model }}/ap/$v"
+            done
+          fi
+          PDA="$(python3 -c "import json; print(json.load(open('work/${{ matrix.model }}/stock-info.json'))['pda'])")"
+          AP_NAME="AP_${{ matrix.model }}_${PDA}_Faiz_${KERNEL_TAG}_ksu${KSU_TAG#v}.tar.md5"
+          echo "AP_NAME=$AP_NAME" >> "$GITHUB_ENV"
+          ./scripts/pack-ap.sh --dir "work/${{ matrix.model }}/ap" --out "out/$AP_NAME"
+
+      - name: Verify AP
+        run: |
+          set -euo pipefail
+          ./scripts/verify-ap.sh --ap "out/$AP_NAME" --vbmeta-mode "$VBMETA_MODE"
+
+      - name: Upload AP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ap-${{ matrix.model }}
+          path: |
+            out/*.tar.md5
+            work/${{ matrix.model }}/stock-info.json
+            work/${{ matrix.model }}/vbmeta/vbmeta-flags.json
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: [prepare, build]
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      KERNEL_TAG: ${{ needs.prepare.outputs.kernel_tag }}
+      KSU_TAG: ${{ needs.prepare.outputs.ksu_tag }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+      VBMETA_MODE: ${{ needs.prepare.outputs.vbmeta_mode }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          # 不用 merge-multiple：各机型的 stock-info.json / vbmeta-flags.json
+          # 同名，合并会互相覆盖。默认按 artifact 名分子目录存放。
+          path: artifacts
+
+      - name: Compose release notes
+        run: |
+          set -euo pipefail
+          {
+            echo "## Odin 直刷 AP 包"
+            echo ""
+            echo "- 内核：Faiz 内核 \`$KERNEL_TAG\`（Sadrzd/kernel_samsung_sm8550）"
+            echo "- KernelSU：官方 \`$KSU_TAG\` LKM（KMI android13-5.15）"
+            echo "- vbmeta 模式：\`$VBMETA_MODE\`"
+            echo ""
+            echo "### 刷机方法"
+            echo "只把 AP 文件放进 Odin 的 AP 栏，BL / CP / CSC 留空，不要勾选 Re-partition，不要选 CSC。"
+            echo "刷完开机即有 root：/data 未被清空，之前授权过的 App 直接有 root。"
+            echo "从 KernelSU Next 换过来的手机：刷完后请装**官方 KernelSU 管理器**（Next 管理器不再匹配），"
+            echo "授权可能需要在官方管理器里重新给一遍，Next 的授权列表不会自动带过来。"
+            echo ""
+            echo "### ⚠️  vbmeta 与数据安全（必读）"
+            echo "韩版（SM-S918N）AP 不含 vbmeta、不打补丁、不做起飞前检查：只刷 boot + init_boot，不存在因 vbmeta 清空数据的风险。"
+            echo "国行（SM-S9180）AP 的 vbmeta 模式为：\`$VBMETA_MODE\`（仅适用于国行 build）。"
+            echo "国行手机 vbmeta 状态未知时，请先用 scripts/check-vbmeta.sh 检查（见 README）。"
+            echo "如果国行手机 vbmeta 还是 flags=0，第一次刷入 flags=2 的 vbmeta 可能清空数据，务必先备份。"
+            if [ "$VBMETA_MODE" = "disable" ]; then
+              echo ""
+              echo "⚠️ **本包内含 flags=2 的 vbmeta：首次刷入可能清空数据，请先完整备份！**"
+            fi
+            if [ "$VBMETA_MODE" = "stock" ]; then
+              echo ""
+              echo "⚠️ **本包是 stock 测试版：vbmeta 为原厂原样（flags 不变），若手机校验仍在强制执行可能开不了机，仅供测试。**"
+            fi
+            echo ""
+            echo "### 各机型底包与 vbmeta flags"
+            shopt -s nullglob
+            for f in artifacts/*/stock-info.json; do
+              echo "- \`$(dirname "$f" | xargs basename)\`：$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('pda'), d.get('source'))" "$f")"
+            done
+            for f in artifacts/*/vbmeta-flags.json; do
+              echo "- vbmeta flags（$(dirname "$f" | xargs basename)）：$(cat "$f" | tr -d '\n ')"
+            done
+            shopt -u nullglob
+            echo ""
+            echo "### 恢复"
+            echo "开不了机时用 Odin 刷回对应机型的官方全量固件即可恢复。"
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha256sum artifacts/*/*.tar.md5 > SHA256SUMS
+          gh release create "$RELEASE_TAG" \
+            --title "$RELEASE_TAG" \
+            --notes-file release-notes.md \
+            artifacts/*/*.tar.md5 SHA256SUMS
+
+      - name: Update pins.json (last built kernel tag)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -c "import json,sys; d=json.load(open(\"config/pins.json\")); d[\"kernel\"][\"last_built_tag\"]=sys.argv[1]; json.dump(d, open(\"config/pins.json\",\"w\"), indent=2, ensure_ascii=False)" "$KERNEL_TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add config/pins.json
+          git diff --cached --quiet && { echo "pins.json 无变化"; exit 0; }
+          git commit -m "chore: record last built kernel tag $KERNEL_TAG [skip ci]"
+          git push || echo "::warning::回写 pins.json 失败（权限不足时可忽略，定时巡检仍以 Release 是否存在为准）"
