@@ -67,15 +67,15 @@ import hashlib, json, os, sys
 out, model, region, pda, source = sys.argv[1:6]
 info = {"source": source, "model": model, "region": region, "pda": pda, "files": {}}
 for name in sorted(os.listdir(out)):
-p = os.path.join(out, name)
-if os.path.isfile(p) and name.endswith(".img"):
-h = hashlib.sha256()
-with open(p, "rb") as f:
-for chunk in iter(lambda: f.read(1 << 20), b""):
-h.update(chunk)
-info["files"][name] = {"sha256": h.hexdigest(), "size": os.path.getsize(p)}
+    p = os.path.join(out, name)
+    if os.path.isfile(p) and name.endswith(".img"):
+        h = hashlib.sha256()
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        info["files"][name] = {"sha256": h.hexdigest(), "size": os.path.getsize(p)}
 with open(os.path.join(out, "stock-info.json"), "w") as f:
-json.dump(info, f, indent=2)
+    json.dump(info, f, indent=2)
 print("fetch-stock: 已记录", os.path.join(out, "stock-info.json"))
 EOF
 }
