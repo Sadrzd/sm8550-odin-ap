@@ -60,13 +60,14 @@ fi
 echo "build-boot: Faiz 内核校验通过（ARM64 Image）"
 
 # --- 找 magiskboot ---
-# 三种方式按顺序尝试（2026-11-09 第 6 次构建教训：只靠未认证的
+# 四种方式按顺序尝试（2026-11-09 第 6 次构建教训：只靠未认证的
 # GitHub API 会在偶发情况下返回无 .apk 资产的 JSON，导致 IndexError；
 # 而 ksud 备选方案不能用——ksud boot-patch 往 boot.img 里塞 KernelSU
 # LKM 并新建 ramdisk，不是纯换内核，语义不对，故已删掉该备选）：
 #   1. gh（Runner 自带认证，配额高，最稳）
 #   2. GitHub API + curl（未认证，可能限流）
-#   3. 固定版本直链 v29.0
+#   3. Magisk 官方版本通道 stable.json（不走 API，不限流）
+#   4. 固定版本直链 v29.0
 get_magiskboot() {
   if [[ -n "$MAGISKBOOT" && -x "$MAGISKBOOT" ]]; then echo "$MAGISKBOOT"; return 0; fi
   if command -v magiskboot >/dev/null 2>&1; then command -v magiskboot; return 0; fi
@@ -90,19 +91,29 @@ get_magiskboot() {
       curl -fsSL -o "$apk" "$url" 2>/dev/null || rm -f "$apk"
     fi
   fi
-  # 方法 3：固定版本直链
+  # 方法 3：Magisk 官方版本通道 stable.json（不走 GitHub API，不限流）
   if [[ ! -f "$apk" ]]; then
-    echo "build-boot: gh 与 API 均未取到 APK，尝试固定版本 v29.0 直链 ..." >&2
+    local url
+    url="$(curl -fsSL "https://github.com/topjohnwu/magisk-files/raw/master/stable.json" 2>/dev/null \
+      | python3 -c "import sys, json; print(json.load(sys.stdin)['magisk']['link'])" 2>/dev/null)" || url=""
+    if [[ -n "$url" ]]; then
+      echo "build-boot: stable.json 指向 $url，正在下载 ..." >&2
+      curl -fsSL -o "$apk" "$url" 2>/dev/null || rm -f "$apk"
+    fi
+  fi
+  # 方法 4：固定版本直链
+  if [[ ! -f "$apk" ]]; then
+    echo "build-boot: gh、API 与 stable.json 均未取到 APK，尝试固定版本 v29.0 直链 ..." >&2
     curl -fsSL -o "$apk" "https://github.com/topjohnwu/Magisk/releases/download/v29.0/Magisk-v29.0.apk" 2>/dev/null || rm -f "$apk"
   fi
-  [[ -f "$apk" ]] || { echo "build-boot: 三种方式都未取到 Magisk APK" >&2; rm -rf "$tmp"; return 1; }
+  [[ -f "$apk" ]] || { echo "build-boot: 四种方式都未取到 Magisk APK" >&2; rm -rf "$tmp"; return 1; }
   unzip -o -q "$apk" 'lib/x86_64/libmagiskboot.so' -d "$tmp" || { rm -rf "$tmp"; return 1; }
   cp "$tmp/lib/x86_64/libmagiskboot.so" "$tmp/magiskboot"
   chmod +x "$tmp/magiskboot"
   echo "$tmp/magiskboot"
 }
 
-MB="$(get_magiskboot)" || die "无法获取 magiskboot，无法替换内核（已尝试 gh / GitHub API / v29.0 直链）"
+MB="$(get_magiskboot)" || die "无法获取 magiskboot，无法替换内核（已尝试 gh / GitHub API / stable.json / v29.0 直链）"
 echo "build-boot: magiskboot = $MB"
 
 # --- 解包、换内核、打包 ---

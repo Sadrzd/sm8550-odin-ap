@@ -57,16 +57,17 @@ ACTUAL_MD5="$(md5sum "$WORK/body.tar" | awk '{print $1}')"
 ok "tar.md5 校验和一致"
 
 # --- 2. 成员白名单 ---
-ALLOWED="^(boot|init_boot|vbmeta|vbmeta_system|vbmeta_vendor)\.img\.lz4$"
+# 允许可选的 ./ 前缀（防御性：万一打包方式改回 ./*.img.lz4，校验也不应误杀）。
+ALLOWED="^(\./)?(boot|init_boot|vbmeta|vbmeta_system|vbmeta_vendor)\.img\.lz4$"
 MEMBERS="$(tar -tf "$WORK/body.tar")"
 # 注意：不能用管道接 while（die 会只退出子 shell）；改用进程替换。
 while read -r m; do
   [[ "$m" =~ $ALLOWED ]] || die "AP 里出现不允许的成员：$m（只允许 boot/init_boot/vbmeta*.img.lz4）"
 done < <(echo "$MEMBERS")
-echo "$MEMBERS" | grep -qx "boot.img.lz4"      || die "AP 里缺少 boot.img.lz4"
-echo "$MEMBERS" | grep -qx "init_boot.img.lz4" || die "AP 里缺少 init_boot.img.lz4"
+echo "$MEMBERS" | grep -qxE "(\./)?boot\.img\.lz4"      || die "AP 里缺少 boot.img.lz4"
+echo "$MEMBERS" | grep -qxE "(\./)?init_boot\.img\.lz4" || die "AP 里缺少 init_boot.img.lz4"
 ok "tar 成员白名单通过"
-VBMETA_PRESENT="$(echo "$MEMBERS" | grep -c "^vbmeta.*\.img\.lz4$" || true)"
+VBMETA_PRESENT="$(echo "$MEMBERS" | grep -cE "^(\./)?vbmeta.*\.img\.lz4$" || true)"
 
 if [[ "$VBMETA_MODE" == "omit" && "$VBMETA_PRESENT" != "0" ]]; then
   die "vbmeta-mode=omit 但 AP 里含 vbmeta（$VBMETA_PRESENT 个），与不碰 vbmeta 的设计冲突"

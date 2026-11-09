@@ -61,7 +61,10 @@ done
 mkdir -p "$(dirname "$OUT")"
 TAR="${OUT%.md5}"  # 先写成 .tar，再追加 md5 行后改名
 # 只打包 .lz4 文件；用 ustar 格式；文件名排序固定，保证可复现
-(cd "$WORK" && tar --format=ustar --sort=name -cf "$TAR" ./*.img.lz4) \
+# 注意：成员名不要带 ./ 前缀——三星原厂 tar 和 Fede2782 的发布文件里
+# 成员都是 boot.img.lz4 / init_boot.img.lz4，带 ./ 会让 verify-ap.sh
+# 的白名单认不出来（2026-11-09 对照参考实现时发现的未爆弹）。
+(cd "$WORK" && tar --format=ustar --sort=name -cf "$TAR" *.img.lz4) \
   || die "打包 tar 失败"
 # 追加 md5 行：md5sum 输出格式 "<md5>  <文件名>"，Odin 靠它校验
 (cd "$(dirname "$TAR")" && md5sum "$(basename "$TAR")" >> "$(basename "$TAR")") \
