@@ -62,7 +62,7 @@ get_magiskboot() {
   apk="$tmp/magisk.apk"
   local api="https://api.github.com/repos/topjohnwu/Magisk/releases/latest"
   local url
-  url="$(curl -fsSL "$api" | python3 -c "import sys, json; print([a['browser_download_url'] for a in json.load(sys.stdin)['assets'] if a['name'] == 'Magisk.apk'][0])")" \
+  url="$(curl -fsSL "$api" | python3 -c "import sys, json; print([a['browser_download_url'] for a in json.load(sys.stdin)['assets'] if a['name'].endswith('.apk')][0])")" \
     || { rm -rf "$tmp"; return 1; }
   curl -fsSL -o "$apk" "$url" || { rm -rf "$tmp"; return 1; }
   unzip -o -q "$apk" 'lib/x86_64/libmagiskboot.so' -d "$tmp" || { rm -rf "$tmp"; return 1; }
@@ -77,7 +77,6 @@ MB="$(get_magiskboot)" || {
   echo "build-boot: 用 ksud boot-patch -k 替换内核 ..."
   "$KSUD" boot-patch -b "$STOCK_BOOT" -k "$KERNEL" -o "$(dirname "$OUT")" \
     || die "ksud 替换内核失败"
-  local produced
   produced="$(find "$(dirname "$OUT")" -maxdepth 1 -name 'kernelsu_patched*' -o -maxdepth 1 -name 'new-boot.img' | head -n 1)"
   [[ -n "$produced" ]] || die "ksud 未产出替换后的 boot.img"
   mv "$produced" "$OUT"
