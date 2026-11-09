@@ -1,0 +1,28 @@
+# 三星官方固件与镜像：版权文件，绝不提交
+*.img
+*.img.lz4
+*.tar
+*.tar.md5
+*.zip
+firmware/
+stock/
+base-images/
+*.enc2
+*.enc4
+
+# 敏感信息：绝不提交
+*imei*
+*IMEI*
+*serial*
+*.key
+*.pem
+
+# 构建中间产物
+work/
+out/
+*.log
+cache.db
+
+# 系统文件
+.DS_Store
+Thumbs.db

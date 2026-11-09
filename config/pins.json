@@ -1,0 +1,35 @@
+{
+  "comment": "钉死的版本。构建时以此为准，不用 latest 浮动；上游发新版时由定时巡检发现并更新本文件后才会触发重建。KernelSU 版本必须在构建时核实：去 tiann/KernelSU 的 Releases 确认 tag 与资产文件名（ksud 二进制与 android13-5.15 的 kernelsu.ko）确实存在。",
+  "kernel": {
+    "expected_version_prefix": "5.15.225-android13-5-Faiz-",
+    "last_built_tag": null,
+    "last_built_tag_note": "首次构建前为 null；每次成功发布后由工作流回写为本次构建的内核 Release tag，用于定时巡检比对。",
+    "repo": "Sadrzd/kernel_samsung_sm8550",
+    "zip_pattern": "SM8550_LKM_*.zip"
+  },
+  "kernelsu": {
+    "ksud_asset_pattern": "ksud-x86_64-unknown-linux-musl",
+    "lkm_asset_pattern": "*android13-5.15*kernelsu.ko",
+    "manager_apk_note": "AP 包不内置管理器 App；用户刷机后自行安装同版本官方 KernelSU 管理器。",
+    "repo": "tiann/KernelSU",
+    "tag": "v3.3.1",
+    "tag_note": "构建时核实：v3.3.1 为 2026-11 已知最新官方版；若上游已有更新，先更新此处再构建。"
+  },
+  "kmi": "android13-5.15",
+  "vbmeta": {
+    "default_mode": "omit",
+    "mode_note": "以下模式仅适用于国行（SM-S9180）等需要处理 vbmeta 的 build；韩版（SM-S918N）AP 不含 vbmeta、不打补丁、不做起飞前检查，固定为 omit。omit（默认）：AP 不含 vbmeta，最安全，不可能因 vbmeta 状态变化清数据，要求手机 vbmeta 已是 flags=2。reuse：使用用户提供的手机当前 vbmeta 原样放入 AP，须校验 flags=2，否则构建失败。disable：从原厂 vbmeta 生成 flags=2 的禁用校验版，仅在 allow_vbmeta_disable=true 时允许，且 Release 必须标注可能清空数据的警告。stock（仅供测试）：原厂 vbmeta 原样放进 AP，flags 不变；若手机校验仍在强制执行可能开不了机。",
+    "modes": [
+      "omit",
+      "reuse",
+      "disable",
+      "stock"
+    ],
+    "scope": "CHC-only; Korean (SM-S918N) builds always omit vbmeta entirely"
+  },
+  "known_target_state": {
+    "comment": "已知目标手机状态（2026-11-09 用户确认）。构建逻辑不依赖这些信息，但 README 与 Release notes 必须与之保持一致。",
+    "SM-S918N": "已 root，但用 KernelSU Next（非官方）；韩版 AP 不考虑 vbmeta（只含 boot + init_boot），无需发送 vbmeta 文件、无需起飞前检查；刷完后装官方 KernelSU 管理器，授权可能需要重新给一遍。",
+    "SM-S9180": "vbmeta 处理仅适用于国行 build，仍是开放问题；首次刷入前须用 scripts/check-vbmeta.sh 确认 flags。"
+  }
+}

@@ -1,0 +1,124 @@
+{
+  "comment": "AP 构建机型矩阵。AP 必须按“机型 × 固件版本”分别出包：底包（原厂 boot / init_boot / vbmeta）不能跨机型、跨固件版本混用。地区（CHC/TGY/KOO）不是独立维度，但不同渠道是不同的 PDA，要按渠道下载固件。v1 只做 S918N（韩版，优先）和 S9180（国行）。",
+  "devices": [
+    {
+      "bootloader_bit": 8,
+      "bootloader_bit_note": "待构建时用 samloader check-update 核实；不得低于目标手机当前 BL 位。",
+      "channel": "KOO",
+      "codename": "dm3q",
+      "model": "SM-S918N",
+      "name": "Galaxy S23 Ultra",
+      "notes": "v1 首发机型。韩版 S918N 与国行 S9180 同为 dm3q，内核 Image 通用，但原厂 boot/init_boot 底包必须用 S918N KOO 固件。韩版 AP 只含 boot + init_boot，不考虑 vbmeta（不含、不打补丁、不做起飞前检查）。已知目标手机状态（2026-11-09）：该机目前用 KernelSU Next（不是官方 KSU）；刷完后装官方 KernelSU 管理器，授权可能需要重新给一遍。",
+      "pda": null,
+      "pda_note": "构建时用 samloader check-update 动态获取最新 PDA；不得写死未经核实的版本号。韩版 One UI 9.0 时代固件 BL 位为 8（构建时核实，必须 >= 目标手机当前 BL 位）。",
+      "priority": 1,
+      "region": "KOO",
+      "status": "v1",
+      "vbmeta_policy": "none"
+    },
+    {
+      "bootloader_bit": 7,
+      "channel": "CHC",
+      "codename": "dm3q",
+      "model": "SM-S9180",
+      "name": "Galaxy S23 Ultra",
+      "notes": "v1 第二批。底包必须用 S9180 CHC 固件，不得与韩版 S918N 的底包混用。vbmeta 处理仅适用于国行 build（仍是开放问题）：首次刷入前须用 scripts/check-vbmeta.sh 确认 flags；若 flags=0，首次刷入 flags=2 的 vbmeta 可能清空数据。",
+      "pda": "S9180ZCU7FZDP",
+      "pda_note": "用户本机正在用的固件版本（Android 16，BP4A.251205.006）。构建时如 samloader 返回更新的 PDA，以 check-update 结果为准并更新本文件。",
+      "priority": 2,
+      "region": "CHC",
+      "status": "v1",
+      "vbmeta_policy": "check"
+    }
+  ],
+  "kmi": "android13-5.15",
+  "planned": [
+    {
+      "codename": "dm1q",
+      "models": [
+        "SM-S9110",
+        "SM-S911B",
+        "SM-S911U",
+        "SM-S911N"
+      ],
+      "name": "Galaxy S23",
+      "notes": "v2 扩展。每个型号 × 渠道都要单独跑一次底包下载。",
+      "regions": [
+        "CHC",
+        "TGY",
+        "KOO"
+      ],
+      "status": "planned"
+    },
+    {
+      "codename": "dm2q",
+      "models": [
+        "SM-S9160",
+        "SM-S916B",
+        "SM-S916U",
+        "SM-S916N"
+      ],
+      "name": "Galaxy S23+",
+      "notes": "v2 扩展。",
+      "regions": [
+        "CHC",
+        "TGY",
+        "KOO"
+      ],
+      "status": "planned"
+    },
+    {
+      "codename": "q5q",
+      "models": [
+        "SM-F9460",
+        "SM-F946B",
+        "SM-F946U",
+        "SM-F946N"
+      ],
+      "name": "Galaxy Z Fold5",
+      "notes": "v2 后期。折叠屏 vendor_boot/DTB 结构需单独验证。",
+      "regions": [
+        "CHC",
+        "TGY",
+        "KOO"
+      ],
+      "status": "planned"
+    },
+    {
+      "codename": "b5q",
+      "models": [
+        "SM-F7310",
+        "SM-F731B",
+        "SM-F731U",
+        "SM-F731N"
+      ],
+      "name": "Galaxy Z Flip5",
+      "notes": "v2 后期。",
+      "regions": [
+        "CHC",
+        "TGY",
+        "KOO"
+      ],
+      "status": "planned"
+    },
+    {
+      "codename": "gts9/gts9wifi/gts9p/gts9pwifi/gts9u/gts9uwifi",
+      "models": [
+        "SM-X710",
+        "SM-X716B",
+        "SM-X810",
+        "SM-X816B",
+        "SM-X910",
+        "SM-X916B"
+      ],
+      "name": "Galaxy Tab S9 系列",
+      "notes": "最后扩展。平板的 vendor_boot/DTB 结构与手机略有差异，风险最高，放最后；每个型号上线前必须真机实测。",
+      "regions": [
+        "CHC",
+        "TGY",
+        "KOO"
+      ],
+      "status": "planned"
+    }
+  ]
+}
