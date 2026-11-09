@@ -2,7 +2,7 @@
   "comment": "钉死的版本。构建时以此为准，不用 latest 浮动；上游发新版时由定时巡检发现并更新本文件后才会触发重建。KernelSU 版本必须在构建时核实：去 tiann/KernelSU 的 Releases 确认 tag 与资产文件名（ksud 二进制与 android13-5.15 的 kernelsu.ko）确实存在。",
   "kernel": {
     "expected_version_prefix": "5.15.225-android13-5-Faiz-",
-    "last_built_tag": null,
+    "last_built_tag": "sm8550-lkm-5.15.225-20261109-r4",
     "last_built_tag_note": "首次构建前为 null；每次成功发布后由工作流回写为本次构建的内核 Release tag，用于定时巡检比对。",
     "repo": "Sadrzd/kernel_samsung_sm8550",
     "zip_pattern": "SM8550_LKM_*.zip"
