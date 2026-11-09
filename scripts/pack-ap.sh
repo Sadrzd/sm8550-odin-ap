@@ -38,6 +38,12 @@ done
 [[ -f "$DIR/boot.img" ]]      || die "缺少 boot.img：$DIR"
 [[ -f "$DIR/init_boot.img" ]] || die "缺少 init_boot.img：$DIR"
 
+# 注意：下面打包时要 cd 进临时目录，相对路径会失效（2026-11-09
+# 第 9 次构建就栽在这里：cd 后 tar 写相对路径的 $TAR，
+# 报错 Cannot open: No such file or directory）。先转成绝对路径。
+DIR="$(realpath -m "$DIR")"
+OUT="$(realpath -m "$OUT")"
+
 command -v lz4 >/dev/null 2>&1 || die "未找到 lz4，请安装（apt install liblz4-tool / lz4）"
 
 WORK="$(mktemp -d)"
