@@ -101,6 +101,15 @@ return 0
 }
 
 # ---------- 首选：SamLoader-RS 下载 ----------
+# 注意：当前版 samloader-rs（topjohnwu/samloader-rs，2026 年重构后）
+# 的 --model/--region 不是全局参数，而是 check-update / download
+# 各子命令自己的参数，必须放在子命令后面：
+#   samloader check-update --model SM-S918N --region KOO
+#   samloader download --model SM-S918N --region KOO --out-dir DIR
+# 放在子命令前面（samloader --model ... check-update）会被 clap 拒绝：
+#   error: unexpected argument '--model' found
+# check-update 只打印一行最新版本号，格式为 PDA/CSC/MODEM（如
+# S918NKSU8GYJ1/S918NOKR8GYJ1/S918NKSU8GYJ1），PDA 取第一段。
 echo "fetch-stock: 从三星服务器下载 $MODEL / $REGION 的最新固件（SamLoader-RS，无需 IMEI）"
 
 if ! command -v samloader >/dev/null 2>&1; then
@@ -120,25 +129,24 @@ fi
 
 echo "fetch-stock: 查询最新固件版本..."
 CHECK_OUT="$OUT/check-update.txt"
-if ! samloader --model "$MODEL" --region "$REGION" check-update > "$CHECK_OUT" 2>&1; then
+if ! samloader check-update --model "$MODEL" --region "$REGION" > "$CHECK_OUT" 2>&1; then
 cat "$CHECK_OUT" >&2 || true
 warn "check-update 失败：请检查型号/渠道是否正确，或三星服务器暂时不可用"
 use_base_dir && exit 0
 die "check-update 失败，且无备用底包可用"
 fi
 cat "$CHECK_OUT"
-# check-update 输出里包含 PDA（如 S918NKSU8GYJ1/...）；能解析就记录下来
+# check-update 输出只有一行版本号 PDA/CSC/MODEM；PDA 取第一段
 if [[ -z "$PDA" ]]; then
-PDA="$(grep -oE '[A-Z0-9]{4,}[A-Z][0-9][A-Z0-9]{4}' "$CHECK_OUT" | head -n 1 || true)"
+PDA="$(head -n 1 "$CHECK_OUT" | cut -d/ -f1 | tr -d '[:space:]' || true)"
 fi
 echo "fetch-stock: 目标 PDA：${PDA:-（未能解析，以实际下载为准）}"
 
 DL_DIR="$OUT/download"
 mkdir -p "$DL_DIR"
 echo "fetch-stock: 开始下载（约 8 GB，多线程并行，边下边解密）..."
-# samloader-rs 的 download 子命令没有 --out 参数，下载到当前目录；
-# 因此先 cd 进下载目录再执行。
-if ! (cd "$DL_DIR" && samloader --model "$MODEL" --region "$REGION" download); then
+# download 支持 --out-dir（-d），不用 cd 进目录；--version 留空即下载最新版
+if ! samloader download --model "$MODEL" --region "$REGION" --out-dir "$DL_DIR"; then
 warn "固件下载失败"
 rm -rf "$DL_DIR"
 use_base_dir && exit 0
