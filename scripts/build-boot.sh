@@ -11,8 +11,8 @@
 #
 # magiskboot 获取：优先用系统里的；没有时自动从官方 Magisk APK 里提取
 # libmagiskboot.so（https://github.com/topjohnwu/Magisk/releases）。
-# 备选：如果 magiskboot 不可用，可用 ksud boot-patch -b boot.img -k Image
-# 完成同样操作（ksud 自带 boot 镜像解析），见 KSUD_FALLBACK。
+# 获取失败就直接报错退出，不用 ksud 兜底——ksud boot-patch 往 boot.img
+# 里塞 KernelSU LKM 并新建 ramdisk，不是纯换内核，语义不对。
 set -euo pipefail
 
 STOCK_BOOT=""
@@ -53,36 +53,49 @@ fi
 echo "build-boot: Faiz 内核校验通过（ARM64 Image）"
 
 # --- 找 magiskboot ---
+# 三种方式按顺序尝试（2026-11-09 第 6 次构建教训：只靠未认证的
+# GitHub API 会在偶发情况下返回无 .apk 资产的 JSON，导致 IndexError；
+# 而 ksud 备选方案不能用——ksud boot-patch 往 boot.img 里塞 KernelSU
+# LKM 并新建 ramdisk，不是纯换内核，语义不对，故已删掉该备选）：
+#   1. gh（Runner 自带认证，配额高，最稳）
+#   2. GitHub API + curl（未认证，可能限流）
+#   3. 固定版本直链 v29.0
 get_magiskboot() {
   if [[ -n "$MAGISKBOOT" && -x "$MAGISKBOOT" ]]; then echo "$MAGISKBOOT"; return 0; fi
   if command -v magiskboot >/dev/null 2>&1; then command -v magiskboot; return 0; fi
   echo "build-boot: 未找到 magiskboot，从官方 Magisk APK 提取 ..." >&2
   local tmp apk
   tmp="$(mktemp -d)"
-  apk="$tmp/magisk.apk"
-  local api="https://api.github.com/repos/topjohnwu/Magisk/releases/latest"
-  local url
-  url="$(curl -fsSL "$api" | python3 -c "import sys, json; print([a['browser_download_url'] for a in json.load(sys.stdin)['assets'] if a['name'].endswith('.apk')][0])")" \
-    || { rm -rf "$tmp"; return 1; }
-  curl -fsSL -o "$apk" "$url" || { rm -rf "$tmp"; return 1; }
+  apk="$tmp/Magisk.apk"
+  # 方法 1：gh
+  if command -v gh >/dev/null 2>&1; then
+    if (cd "$tmp" && gh release download --repo topjohnwu/Magisk --pattern 'Magisk-v*.apk' >/dev/null 2>&1); then
+      apk="$(ls "$tmp"/Magisk-v*.apk 2>/dev/null | head -n 1)"
+      [[ -n "$apk" ]] || apk="$tmp/Magisk.apk"
+    fi
+  fi
+  # 方法 2：GitHub API + curl（assets 为空时不报错，继续往下走）
+  if [[ ! -f "$apk" ]]; then
+    local url
+    url="$(curl -fsSL "https://api.github.com/repos/topjohnwu/Magisk/releases/latest" 2>/dev/null \
+      | python3 -c "import sys, json; print([a['browser_download_url'] for a in json.load(sys.stdin).get('assets', []) if a['name'].startswith('Magisk-v') and a['name'].endswith('.apk')][0])" 2>/dev/null)" || url=""
+    if [[ -n "$url" ]]; then
+      curl -fsSL -o "$apk" "$url" 2>/dev/null || rm -f "$apk"
+    fi
+  fi
+  # 方法 3：固定版本直链
+  if [[ ! -f "$apk" ]]; then
+    echo "build-boot: gh 与 API 均未取到 APK，尝试固定版本 v29.0 直链 ..." >&2
+    curl -fsSL -o "$apk" "https://github.com/topjohnwu/Magisk/releases/download/v29.0/Magisk-v29.0.apk" 2>/dev/null || rm -f "$apk"
+  fi
+  [[ -f "$apk" ]] || { echo "build-boot: 三种方式都未取到 Magisk APK" >&2; rm -rf "$tmp"; return 1; }
   unzip -o -q "$apk" 'lib/x86_64/libmagiskboot.so' -d "$tmp" || { rm -rf "$tmp"; return 1; }
   cp "$tmp/lib/x86_64/libmagiskboot.so" "$tmp/magiskboot"
   chmod +x "$tmp/magiskboot"
   echo "$tmp/magiskboot"
 }
 
-MB="$(get_magiskboot)" || {
-  echo "build-boot: 无法获取 magiskboot，改用 ksud 备选方案（需要 KSUD 环境变量指向 ksud 二进制）" >&2
-  [[ -n "${KSUD:-}" && -x "$KSUD" ]] || die "magiskboot 和 ksud 都不可用，无法继续"
-  echo "build-boot: 用 ksud boot-patch -k 替换内核 ..."
-  "$KSUD" boot-patch -b "$STOCK_BOOT" -k "$KERNEL" -o "$(dirname "$OUT")" \
-    || die "ksud 替换内核失败"
-  produced="$(find "$(dirname "$OUT")" -maxdepth 1 -name 'kernelsu_patched*' -o -maxdepth 1 -name 'new-boot.img' | head -n 1)"
-  [[ -n "$produced" ]] || die "ksud 未产出替换后的 boot.img"
-  mv "$produced" "$OUT"
-  echo "build-boot: 完成（ksud 备选方案）：$OUT"
-  exit 0
-}
+MB="$(get_magiskboot)" || die "无法获取 magiskboot，无法替换内核（已尝试 gh / GitHub API / v29.0 直链）"
 echo "build-boot: magiskboot = $MB"
 
 # --- 解包、换内核、打包 ---
