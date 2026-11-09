@@ -83,14 +83,22 @@ for f in "$WORK"/*.img.lz4; do
 done
 ok "全部 lz4 成员为三星格式（magic 04224d186c）"
 
-# --- 4. boot.img：ANDROID! 头 + ARM64 Image magic ---
+# --- 4. boot.img：ANDROID! 头 + 内核 ARM64 Image magic ---
+# 注意：boot.img 开头是 header（page_size 字节，通常 4096），内核从
+# header 之后才开始，ARMd magic 在“内核内偏移 0x38”处，即 boot.img
+# 内的 page_size+0x38 处——直接对 boot.img 查 0x38 查的是 header 里
+# 的字段，必然失败（2026-11-09 第 13 次构建就栽在这里）。
+# 所以先从 header 里读 page_size（偏移 36 处的 u32），再定位内核。
 if ! python3 - "$WORK/boot.img" <<'EOF'
-import sys
+import struct, sys
 with open(sys.argv[1], "rb") as f:
     head = f.read(8)
     assert head == b"ANDROID!", "boot.img 没有 ANDROID! 头"
-    f.seek(0x38)
-    assert f.read(4) == b"ARMd", "内核不是 ARM64 Image（偏移 0x38 处无 ARMd magic）"
+    f.seek(36)
+    page_size = struct.unpack("<I", f.read(4))[0]
+    assert page_size in (2048, 4096, 8192, 16384), f"page_size 异常：{page_size}"
+    f.seek(page_size + 0x38)
+    assert f.read(4) == b"ARMd", "内核不是 ARM64 Image（内核偏移 0x38 处无 ARMd magic）"
 EOF
 then
   die "boot.img 校验失败：不是合法 Android boot 镜像，或内核不是 ARM64 Image"
