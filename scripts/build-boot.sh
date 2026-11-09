@@ -39,6 +39,13 @@ done
 [[ -f "$STOCK_BOOT" ]] || die "原厂 boot.img 不存在：$STOCK_BOOT"
 [[ -f "$KERNEL" ]]     || die "Faiz 内核不存在：$KERNEL"
 
+# 注意：下面脚本会 cd 进临时目录再操作，相对路径会失效（2026-11-09
+# 第 8 次构建就栽在这里：cd 后 cp new-boot.img 到相对路径的 $OUT，
+# 报错 No such file or directory）。所以先全部转成绝对路径。
+STOCK_BOOT="$(realpath -m "$STOCK_BOOT")"
+KERNEL="$(realpath -m "$KERNEL")"
+OUT="$(realpath -m "$OUT")"
+
 # --- 校验 Faiz 内核是未压缩 ARM64 Image（magic "ARMd" 在偏移 0x38 处）---
 if ! python3 - "$KERNEL" <<'EOF'
 import sys
