@@ -42,7 +42,12 @@ trap 'rm -rf "$WORK"' EXIT
 
 # --- 1. md5 校验：去掉末尾的 md5 行，算本体 md5，与记录值比对 ---
 # tar.md5 末尾一行格式： "<md5>  <文件名>"
-LAST_LINE="$(tail -n 1 "$AP")"
+# 注意：不能用 tail -n 1 取末尾行——tar 本体是二进制，末尾是 1024 字节
+# 的零块，零块里没有换行，tail 会把“行”一路读进压缩数据里，还带出
+# NUL 字节（2026-11-09 第 10 次构建就栽在这里：末尾没有合法的 md5 行）。
+# md5 行格式固定且很短，按字节取尾部再过滤 NUL。
+TAIL="$(tail -c 512 "$AP" | tr -d '\0')"
+LAST_LINE="$(printf '%s\n' "$TAIL" | grep -aE '^[0-9a-f]{32}  ' | tail -n 1)"
 RECORDED_MD5="$(echo "$LAST_LINE" | awk '{print $1}')"
 [[ "$RECORDED_MD5" =~ ^[0-9a-f]{32}$ ]] || die "tar.md5 末尾没有合法的 md5 行"
 BODY_SIZE="$(($(stat -c%s "$AP") - ${#LAST_LINE} - 1))"
